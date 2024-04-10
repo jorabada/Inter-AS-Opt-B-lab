@@ -1,11 +1,12 @@
-# Inter Domain BGP-LU and EVPN lab
+# Inter-AS Option B EVPN services lab
 
-This lab shows EVPN and IPVPN services on Inter-domain scenarios, where services use BGP-LU transport tunnels across domains.
+This lab shows EVPN and IPVPN services on Inter-AS option B scenarios.
 
-![](interdomainbgplu.clab.drawio.png)
+![](interasoptb.clab.drawio.png)
 
 Includes:
-- three ISIS domains
-- three LDP domains
-- BGP LU tunnels across domains
+- Two ASNs
+- Each AS with ISIS
+- In each AS, LDP and SR-ISIS are enabled
+- ASBRs configured with inter-as-vpn to perform option B
 - EVPN services: EVPN-MPLS VPWS, EVPN-MPLS ELAN, EVPN-MPLS IFL
