@@ -618,7 +618,7 @@ A:br6# info
 
 Once the default network-instance is configured on all the routers, reachability and the setup of tunnels can be checked as follows:
 
-<pre>
+```bash
 // route-table and tunnel-table in pe1
 
 A:pe1# show route-table
@@ -729,11 +729,10 @@ IPv6 tunnel table of network-instance "default"
 --{ + candidate shared default }--[ network-instance default ]--
 A:pe2#
 
-</pre>
-
+```
 In addition, the following outputs show that the BGP sessions for EVPN and IP-VPN families are established.
 
-<pre>
+```bash
 // BGP neighbors on pe1
 --{ + candidate shared default }--[ network-instance default ]--
 A:pe1# show protocols bgp neighbor
@@ -811,9 +810,504 @@ Summary:
 0 dynamic peers
 --{ + candidate shared default }--[ network-instance default ]--
 
+```
+
+## Configuration of EVPN Layer 2 services on the PEs
+
+After the IGP, tunnels and BGP sessions are properly configured and operating, services are configured on the PE routers. In this example we have VPWS, MAC-VRF and IP-VRF services across the two domains.
+The first service we are looking at is VPWS. This is the configuration on pe1 and pe2 (same configuration on pe3):
+
+<pre>
+// config on pe1
+
+--{ candidate shared default }--[ network-instance VPWS-1 ]--
+A:pe1# info
+    type vpws
+    interface ethernet-1/1.1 {
+        connection-point A
+    }
+    protocols {
+        bgp-evpn {
+            bgp-instance 1 {
+                encapsulation-type mpls
+                evi 1
+                ecmp 8
+                vpws-attachment-circuits {
+                    local {
+                        local-attachment-circuit ac1 {
+                            ethernet-tag 1
+                            connection-point B
+                        }
+                    }
+                    remote {
+                        remote-attachment-circuit ac23 {
+                            ethernet-tag 23
+                            connection-point B
+                        }
+                    }
+                }
+                mpls {
+                    next-hop-resolution {
+                        allowed-tunnel-types [
+                            bgp
+                            ldp
+                            sr-isis
+                        ]
+                    }
+                }
+            }
+        }
+        bgp-vpn {
+            bgp-instance 1 {
+                route-target {
+                    export-rt target:65000:1
+                    import-rt target:65000:1
+                }
+            }
+        }
+    }
+    connection-point A {
+    }
+    connection-point B {
+    }
+
+// config on pe2
+
+--{ candidate shared default }--[ network-instance VPWS-1 ]--
+A:pe2# info
+    type vpws
+    interface ethernet-1/3.1 {
+        connection-point A
+    }
+    protocols {
+        bgp-evpn {
+            bgp-instance 1 {
+                encapsulation-type mpls
+                evi 1
+                vpws-attachment-circuits {
+                    local {
+                        local-attachment-circuit ac23 {
+                            ethernet-tag 23
+                            connection-point B
+                        }
+                    }
+                    remote {
+                        remote-attachment-circuit ac1 {
+                            ethernet-tag 1
+                            connection-point B
+                        }
+                    }
+                }
+                mpls {
+                    next-hop-resolution {
+                        allowed-tunnel-types [
+                            bgp
+                            ldp
+                            sr-isis
+                        ]
+                    }
+                }
+            }
+        }
+        bgp-vpn {
+            bgp-instance 1 {
+                route-target {
+                    export-rt target:65000:1
+                    import-rt target:65000:1
+                }
+            }
+        }
+    }
+    connection-point A {
+    }
+    connection-point B {
+    }
+
+// Ethernet Segment config on pe2/pe3
+
+--{ candidate shared default }--[ system network-instance protocols evpn ethernet-segments bgp-instance 1 ethernet-segment ES231 ]--
+A:pe2# info
+    admin-state enable
+    esi 01:23:01:00:00:00:00:00:00:00
+    multi-homing-mode single-active
+    interface ethernet-1/3 {
+    }
+    df-election {
+        interface-standby-signaling-on-non-df {
+        }
+        algorithm {
+            type preference
+            preference-alg {
+                preference-value 2
+            }
+        }
+    }
+
 </pre>
 
-## Configuration of EVPN and IP-VPN services on the PEs
+With the configuration above, the EVPN ES destination can be checked on pe1, and the received AD per EVI routes.
 
-After the IGP, tunnels and BGP sessions are properly configured and operating, services are configured on the pe routers. This 
+```bash
+--{ * candidate shared default }--[ network-instance VPWS-1 protocols bgp-evpn bgp-instance 1 vpws-attachment-circuits remote ]--
+A:pe1# info from state remote-attachment-circuit * destinations mpls es-destination *
+    remote-attachment-circuit ac23 {
+        destinations {
+            mpls {
+                es-destination 01:23:01:00:00:00:00:00:00:00 {
+                    destination-index 254026092128
+                    destination 100.0.0.4 evi-label 122077 tunnel-id 254026092080 {
+                    }
+                }
+            }
+        }
+    }
+```
+The destination is established to br4 since br4 is changing the next hop of the received AD routes:
+
+```bash
+--{ * candidate shared default }--[  ]--
+A:pe1# show network-instance default protocols bgp routes evpn route-type 1 summary
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Show report for the BGP route table of network-instance "default"
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Status codes: u=used, *=valid, >=best, x=stale
+Origin codes: i=IGP, e=EGP, ?=incomplete
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+BGP Router ID: 100.0.0.1      AS: 65001      Local AS: 65001
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Type 1 Ethernet Auto-Discovery Routes
++--------+-----------------------------------+--------------------------------+------------+-----------------------------------+-----------------------------------+-----------------------------------+
+| Status |        Route-distinguisher        |              ESI               |   Tag-ID   |             neighbor              |             Next-hop              |               Label               |
++========+===================================+================================+============+===================================+===================================+===================================+
+| u*>    | 100.0.0.2:1                       | 01:23:01:00:00:00:00:00:00:00  | 23         | 100.0.0.4                         | 100.0.0.4                         | 122080                            | <-- AD per EVI route from pe2
+| u*>    | 100.0.0.2:1                       | 01:23:01:00:00:00:00:00:00:00  | 4294967295 | 100.0.0.4                         | 100.0.0.4                         | -                                 |     with NHop br4
+| u*>    | 100.0.0.2:2                       | 01:23:02:00:00:00:00:00:00:00  | 0          | 100.0.0.4                         | 100.0.0.4                         | 122082                            |
+| u*>    | 100.0.0.2:2                       | 01:23:02:00:00:00:00:00:00:00  | 4294967295 | 100.0.0.4                         | 100.0.0.4                         | -                                 |
+| u*>    | 100.0.0.3:1                       | 01:23:01:00:00:00:00:00:00:00  | 23         | 100.0.0.4                         | 100.0.0.4                         | 122077                            |
+| u*>    | 100.0.0.3:1                       | 01:23:01:00:00:00:00:00:00:00  | 4294967295 | 100.0.0.4                         | 100.0.0.4                         | -                                 |
+| u*>    | 100.0.0.3:2                       | 01:23:02:00:00:00:00:00:00:00  | 0          | 100.0.0.4                         | 100.0.0.4                         | 122081                            |
+| u*>    | 100.0.0.3:2                       | 01:23:02:00:00:00:00:00:00:00  | 4294967295 | 100.0.0.4                         | 100.0.0.4                         | -                                 |
++--------+-----------------------------------+--------------------------------+------------+-----------------------------------+-----------------------------------+-----------------------------------+
+8 Ethernet Auto-Discovery routes 8 used, 8 valid
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--{ * candidate shared default }--[  ]--
+``` 
+And the label that is received from br4 for the vpws service with tag 23, i.e. label 122080, is associated to a SWAP opration on br4:
+
+```bash
+--{ candidate shared default }--[  ]--
+A:br4# show network-instance default route-table mpls
++---------+-----------+-------------+-----------------+------------------------+----------------------+------------------+
+| Label   | Operation | Type        | Next Net-Inst   | Next-hop IP (Type)     | Next-hop             | Next-hop MPLS    |
+|         |           |             |                 |                        | Subinterface         | labels           |
++=========+===========+=============+=================+========================+======================+==================+
+| 100     | POP       | ldp         | default         |                        |                      |                  |
+| 100002  | SWAP      | sr-mpls     | N/A             | 10.1.4.1 (mpls)        | ethernet-1/10.0      | 100002           |
+| 100005  | POP       | sr-mpls     | default         |                        |                      |                  |
+| 120001  | SWAP      | sr-mpls     | N/A             | 10.1.4.1 (mpls)        | ethernet-1/10.0      | IMPLICIT_NULL    |
+| 122074  | SWAP      | bgp         | N/A             | 100.0.0.1 (indirect)   |                      | 1001             |
+| 122075  | SWAP      | bgp         | N/A             | 100.0.0.1 (indirect)   |                      | 1002             |
+| 122076  | SWAP      | bgp         | N/A             | 100.0.0.1 (indirect)   |                      | 1003             |
+| 122077  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122045           |
+| 122078  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122048           |
+| 122079  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122052           |
+| 122080  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122053           |
+| 122081  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122046           |
+| 122082  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122054           |
+| 122084  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122055           |
+| 122087  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122060           |
+| 122088  | SWAP      | bgp         | N/A             | 100.0.0.1 (indirect)   |                      | 1004             |
++---------+-----------+-------------+-----------------+------------------------+----------------------+------------------+
+--{ candidate shared default }--[  ]--
+A:br4# show network-instance default route-table mpls | grep 122080
+| 122080  | SWAP      | bgp         | N/A             | 10.4.5.2 (indirect)    |                      | 122053           |
+--{ candidate shared default }--[  ]--
+``` 
+
+EVPN Layer 2 Broadcast Domains can also be stretched across different ASNs. Similar to VPWS, the MAC-VRFs with EVPN are configured on the pe nodes, and the br nodes are do not need to be touched when a new service needs to be attached to pe nodes in different domains.
+On pe1, all the multicast and unicast destinations are created to br4 as expected, but with different service labels:
+
+<pre>
+--{ * candidate shared default }--[ network-instance MAC-VRF-2 ]--
+A:pe1# info
+    type mac-vrf
+    interface ethernet-1/2.1 {
+    }
+    protocols {
+        bgp-evpn {
+            bgp-instance 1 {
+                encapsulation-type mpls
+                evi 2
+                ecmp 8
+                mpls {
+                    bridge-table {
+                    }
+                    next-hop-resolution {
+                        allowed-tunnel-types [
+                            bgp
+                            ldp
+                            sr-isis
+                        ]
+                    }
+                }
+            }
+        }
+        bgp-vpn {
+            bgp-instance 1 {
+                route-target {
+                    export-rt target:65000:2
+                    import-rt target:65000:2
+                }
+            }
+        }
+    }
+</pre>
+```bash
+--{ * candidate shared default }--[ network-instance MAC-VRF-2 ]--
+A:pe1# info from state protocols bgp-evpn bgp-instance 1 mpls bridge-table
+    ingress-multicast-mpls-label 1001
+    ingress-unicast-mpls-label 1000
+    multicast-destinations {
+        multicast-limit {
+            maximum-entries 1024
+            current-usage 2
+        }
+        destination 100.0.0.4 evi-label 122078 tunnel-id 254026092080 {
+            multicast-forwarding BUM
+            destination-index 254026092138
+        }
+        destination 100.0.0.4 evi-label 122079 tunnel-id 254026092080 {
+            multicast-forwarding BUM
+            destination-index 254026092139
+        }
+    }
+```
+
+## Configuration of EVPN-IFL and IPVPN services on the PEs
+
+Finally to illustrate that Inter-AS model B is also supported with EVPN-IFL and IPVPN, we configure IP-VRF-3 in pe1, pe2 and pe3. 
+Node pe2 is configured for EVPN IFL:
+
+<pre>
+--{ candidate shared default }--[ network-instance IP-VRF-3 ]--
+A:pe2# info
+    type ip-vrf
+    interface ethernet-1/1.1 {
+    }
+    protocols {
+        bgp-evpn {
+            bgp-instance 1 {
+                encapsulation-type mpls
+                evi 3
+                ecmp 10
+                mpls {
+                    next-hop-resolution {
+                        allowed-tunnel-types [
+                            bgp
+                            ldp
+                            sr-isis
+                        ]
+                    }
+                }
+            }
+        }
+        bgp-vpn {
+            bgp-instance 1 {
+                route-target {
+                    export-rt target:65000:3
+                    import-rt target:65000:3
+                }
+            }
+        }
+    }
+</pre>
+
+Node pe3 belongs to the same customer but it is configured for IPVPN:
+
+<pre>
+--{ + candidate shared default }--[ network-instance IP-VRF-3 ]--
+A:pe3# info
+    type ip-vrf
+    interface ethernet-1/3.1 {
+    }
+    protocols {
+        bgp-ipvpn {
+            bgp-instance 2 {
+                ecmp 10
+                mpls {
+                    next-hop-resolution {
+                        allowed-tunnel-types [
+                            ldp
+                            sr-isis
+                        ]
+                    }
+                }
+            }
+        }
+        bgp-vpn {
+            bgp-instance 2 {
+                route-distinguisher {
+                    rd 100.0.0.3:3
+                }
+                route-target {
+                    export-rt target:65000:3
+                    import-rt target:65000:3
+                }
+            }
+        }
+    }
+</pre>
+
+And node pe1 uses multi-instance EVPN/IPVPN:
+
+<pre>
+--{ * candidate shared default }--[ network-instance IP-VRF-3 ]--
+A:pe1# info
+    type ip-vrf
+    interface ethernet-1/3.1 {
+    }
+    protocols {
+        bgp-evpn {
+            bgp-instance 1 {
+                encapsulation-type mpls
+                evi 3
+                ecmp 10
+                mpls {
+                    next-hop-resolution {
+                        allowed-tunnel-types [
+                            bgp
+                            ldp
+                            sr-isis
+                        ]
+                    }
+                }
+            }
+        }
+        bgp-ipvpn {
+            bgp-instance 2 {
+                ecmp 10
+                mpls {
+                    next-hop-resolution {
+                        allowed-tunnel-types [
+                            ldp
+                            sr-isis
+                        ]
+                    }
+                }
+            }
+        }
+        bgp-vpn {
+            bgp-instance 1 {
+                route-target {
+                    export-rt target:65000:3
+                    import-rt target:65000:3
+                }
+            }
+            bgp-instance 2 {
+                route-distinguisher {
+                    rd 100.0.0.11:3
+                }
+                route-target {
+                    export-rt target:65000:3
+                    import-rt target:65000:3
+                }
+            }
+        }
+    }
+</pre>
+
+With this configuration Client13 can communicate with Client21 and Client31 via EVPN IFL and IPVPN, respectively, however, Client21 cannot communicate with Client31.
+This is because, even though Client21 EVPN IFL routes are programmed in pe1 route-table and redistributed into IPVPN, the AS-PATH is maintained during the redistribution and when the route gets to an ASBR connected to the ASN of origin, an AS-loop will be detected.
+
+```bash
+--{ * candidate shared default }--[ network-instance IP-VRF-3 ]--
+A:pe1# show route-table
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+IPv4 unicast route table of network instance IP-VRF-3
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
++----------------------------+-------+------------+----------------------+----------+----------+---------+------------+-----------------+-----------------+-----------------+--------------------------+
+|           Prefix           |  ID   | Route Type |     Route Owner      |  Active  |  Origin  | Metric  |    Pref    | Next-hop (Type) |    Next-hop     | Backup Next-hop |     Backup Next-hop      |
+|                            |       |            |                      |          | Network  |         |            |                 |    Interface    |     (Type)      |        Interface         |
+|                            |       |            |                      |          | Instance |         |            |                 |                 |                 |                          |
++============================+=======+============+======================+==========+==========+=========+============+=================+=================+=================+==========================+
+| 10.10.10.0/24              | 3     | local      | net_inst_mgr         | True     | IP-VRF-3 | 0       | 0          | 10.10.10.254    | ethernet-1/3.1  |                 |                          |
+|                            |       |            |                      |          |          |         |            | (direct)        |                 |                 |                          |
+| 10.10.10.254/32            | 3     | host       | net_inst_mgr         | True     | IP-VRF-3 | 0       | 0          | None (extract)  | None            |                 |                          |
+| 10.10.10.255/32            | 3     | host       | net_inst_mgr         | True     | IP-VRF-3 | 0       | 0          | None            |                 |                 |                          |
+|                            |       |            |                      |          |          |         |            | (broadcast)     |                 |                 |                          |
+| 20.20.20.0/24              | 0     | bgp-evpn   | bgp_evpn_mgr         | True     | IP-VRF-3 | 10      | 170        | 100.0.0.4/32    |                 |                 |                          |<-- route from client21 (evpn IFL)
+|                            |       |            |                      |          |          |         |            | (indirect/ldp)  |                 |                 |                          |
+| 30.30.30.0/24              | 0     | bgp-ipvpn  | bgp_ipvpn_mgr        | True     | IP-VRF-3 | 10      | 170        | 100.0.0.4/32    |                 |                 |                          |<-- route from client31 (ipvpn)
+|                            |       |            |                      |          |          |         |            | (indirect/ldp)  |                 |                 |                          |
++----------------------------+-------+------------+----------------------+----------+----------+---------+------------+-----------------+-----------------+-----------------+--------------------------+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+IPv4 routes total                    : 5
+IPv4 prefixes with active routes     : 5
+IPv4 prefixes with active ECMP routes: 0
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--{ * candidate shared default }--[ network-instance IP-VRF-3 ]--
+
+# route 20.20.20.0/24 is detected as invalid due to the AS-loop
+
+--{ candidate shared default }--[ network-instance default ]--
+A:br5# info from state bgp-rib afi-safi l3vpn-ipv4-unicast l3vpn-ipv4-unicast rib-in-out rib-in-post
+    route 100.0.0.3:3 prefix 30.30.30.0/24 neighbor 100.0.0.2 path-id 0 {
+        last-modified "2024-06-21T17:57:33.300Z (10 minutes ago)"
+        used-route false
+        valid-route true
+        best-route true
+        stale-route false
+        pending-delete false
+        neighbor-as 65023
+        group-best true
+        tie-break-reason none
+        attr-id 305
+        received-mpls-label [
+            1004
+        ]
+    }
+    route 100.0.0.11:3 prefix 10.10.10.0/24 neighbor 10.4.5.1 path-id 0 {
+        last-modified "2024-06-21T17:59:30.100Z (8 minutes ago)"
+        used-route false
+        valid-route true
+        best-route true
+        stale-route false
+        pending-delete false
+        neighbor-as 65001
+        group-best true
+        tie-break-reason none
+        attr-id 308
+        received-mpls-label [
+            122088
+        ]
+    }
+    route 100.0.0.11:3 prefix 20.20.20.0/24 neighbor 10.4.5.1 path-id 0 {
+        last-modified "2024-06-21T17:59:30.100Z (8 minutes ago)"
+        used-route false
+        valid-route false
+        best-route false
+        stale-route false
+        pending-delete false
+        neighbor-as 65001
+        group-best false
+        tie-break-reason none
+        attr-id 307
+        received-mpls-label [
+            122088
+        ]
+        invalid-reason {
+            rejected-route false
+            as-loop true   <---- AS loop!
+            next-hop-unresolved false
+            cluster-loop false
+            label-allocation-failed false
+            fib-programming-failed false
+        }
+    }
+
+```
+Note that the next hop of the EVPN IFL and IPVPN routes is br4, as expected.
+
+
 
